@@ -9,7 +9,7 @@ use winit::{
     dpi::PhysicalPosition,
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
-    window::{Window, WindowId},
+    window::{Icon, Window, WindowId},
 };
 
 /// Physics steps dispatched per rendered frame.
@@ -138,6 +138,7 @@ impl ApplicationHandler for App {
         let window = Arc::new(
             event_loop.create_window(Default::default()).unwrap()
         );
+        window.set_window_icon(Some(make_window_icon()));
         self.state = Some(pollster::block_on(State::new(window, self.n)));
     }
 
@@ -163,6 +164,43 @@ fn main() {
     EventLoop::new().unwrap()
         .run_app(&mut App { state: None, n })
         .unwrap();
+}
+
+/// Generates a 64×64 window icon that mirrors the simulation's look:
+/// two glowing galactic cores (Gaussian falloff) on a black background,
+/// with a sparse star field rendered via a deterministic hash.
+fn make_window_icon() -> Icon {
+    const S: u32 = 64;
+    let mut rgba = vec![0u8; (S * S * 4) as usize];
+
+    // Core positions match the galaxy-collision initial conditions (scaled to icon space)
+    let cores: &[(f32, f32)] = &[(43.0, 16.0), (20.0, 47.0)];
+
+    for y in 0..S {
+        for x in 0..S {
+            let idx = ((y * S + x) * 4) as usize;
+
+            // Gaussian glow from each galactic core
+            let mut v = 0.0f32;
+            for &(cx, cy) in cores {
+                let dx = x as f32 - cx;
+                let dy = y as f32 - cy;
+                v += (-(dx * dx + dy * dy) / 30.0).exp();
+            }
+
+            // Sparse star field via deterministic hash (no RNG dep)
+            let h = x.wrapping_mul(2654435761).wrapping_add(y.wrapping_mul(2246822519));
+            let star = if h & 0xFFFF < 180 { 0.18 } else { 0.0 };
+
+            let b = ((v + star).min(1.0) * 255.0) as u8;
+            rgba[idx]     = b;
+            rgba[idx + 1] = b;
+            rgba[idx + 2] = b;
+            rgba[idx + 3] = 255;
+        }
+    }
+
+    Icon::from_rgba(rgba, S, S).unwrap()
 }
 
 fn parse_n() -> u32 {
