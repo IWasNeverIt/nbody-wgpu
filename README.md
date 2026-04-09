@@ -22,6 +22,7 @@ Requires a GPU with Vulkan, Metal, or DirectX 12 support.
 | Left-drag | Pan |
 | Scroll wheel | Zoom in / out |
 | `--n <count>` | Number of particles (default: 1024) |
+| `--gif [frames]` | Record N frames to `nbody.gif` then exit (default 90) |
 
 ## Architecture
 
@@ -56,17 +57,18 @@ Each frame, 4 physics steps are dispatched before rendering:
    brightness, giving a natural glow at galactic cores and along tidal streams.  
    Fragment color maps velocity magnitude to a blue→orange gradient.
 
-## Performance (preliminary)
+## Performance
 
-| N | GPU (RTX 3060 Ti) | CPU (reference) |
+CPU benchmarks measured with `cargo bench` (RTX 3060 Ti, Ryzen 7 5800X, release build):
+
+| N | CPU step (N²/2) | GPU step (tiled) |
 |---|---|---|
-| 256 | — | — |
-| 1 024 | — | — |
-| 4 096 | — | — |
-| 16 384 | — | — |
+| 256 | 424 µs | — |
+| 1 024 | 8.0 ms | — |
+| 4 096 | 109 ms | — |
+| 16 384 | 1.74 s | — |
 
-Run `cargo bench` to populate this table. The CPU crossover (where GPU overhead
-is justified) is expected around N ≈ 500–1000.
+GPU numbers coming once a timing query is added. The crossover is expected around N ≈ 500–1 000, where a single GPU step at 60 fps beats the CPU at the same particle count.
 
 ## Roadmap
 
@@ -77,4 +79,4 @@ is justified) is expected around N ≈ 500–1000.
 - [x] Days 8–9 · render pipeline — instanced point sprites, first particles visible
 - [x] Days 10–11 · visual polish — velocity color, additive glow, pan + zoom, galaxy collision
 - [x] Days 12–13 · CPU benchmark — Criterion harness, `cpu.rs` reference implementation
-- [ ] Day 14 · fill perf table, add GIF demo
+- [x] Day 14 · CPU perf table filled, `--gif` recording, GPU timing query remaining

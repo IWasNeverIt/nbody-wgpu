@@ -1,3 +1,4 @@
+mod capture;
 mod compute;
 pub mod cpu;
 mod render;
@@ -13,7 +14,6 @@ use winit::{
 };
 
 /// Physics steps dispatched per rendered frame.
-/// More steps = faster simulation; each step is ~O(N²) on the GPU.
 const STEPS_PER_FRAME: u32 = 4;
 
 struct State {
@@ -24,6 +24,8 @@ struct State {
     window:        Arc<Window>,
     sim:           sim::Simulation,
     renderer:      render::Renderer,
+    gif:           Option<capture::GifRecorder>,
+    should_exit:   bool,
     // camera
     pan:           [f32; 2],
     zoom:          f32,
@@ -33,7 +35,7 @@ struct State {
 }
 
 impl State {
-    async fn new(window: Arc<Window>, n: u32) -> Self {
+    async fn new(window: Arc<Window>, n: u32, gif_frames: Option<u32>) -> Self {
         let instance = wgpu::Instance::default();
         let surface  = instance.create_surface(Arc::clone(&window)).unwrap();
 
@@ -61,8 +63,13 @@ impl State {
         let size   = window.inner_size();
         let caps   = surface.get_capabilities(&adapter);
         let format = caps.formats[0];
+
+        // COPY_SRC is needed when recording a GIF (copy surface → staging buffer)
+        let mut usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+        if gif_frames.is_some() { usage |= wgpu::TextureUsages::COPY_SRC; }
+
         let config = wgpu::SurfaceConfiguration {
-            usage:   wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage,
             format,
             width:   size.width,
             height:  size.height,
@@ -79,9 +86,16 @@ impl State {
         let (pan, zoom) = ([0.0_f32, 0.0], 1.05_f32);
         renderer.update_camera(&queue, pan, zoom);
 
+        let gif = gif_frames.map(|frames| {
+            capture::GifRecorder::new(
+                &device, size.width, size.height, format, frames, "nbody.gif",
+            )
+        });
+
         Self {
             surface, device, queue, config, window,
-            sim, renderer,
+            sim, renderer, gif,
+            should_exit: false,
             pan, zoom,
             mouse_pressed: false,
             last_cursor:   PhysicalPosition::default(),
@@ -93,7 +107,7 @@ impl State {
             wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             _ => return,
         };
-        let view    = output.texture.create_view(&Default::default());
+        let view = output.texture.create_view(&Default::default());
         let mut enc = self.device.create_command_encoder(&Default::default());
 
         for _ in 0..STEPS_PER_FRAME {
@@ -101,7 +115,17 @@ impl State {
         }
         self.renderer.draw(&mut enc, &view, self.sim.cur());
 
+        if let Some(gif) = &self.gif {
+            gif.copy_to_staging(&mut enc, &output.texture);
+        }
+
         self.queue.submit([enc.finish()]);
+
+        if let Some(gif) = &mut self.gif {
+            gif.encode_frame(&self.device);
+            if gif.done() { self.should_exit = true; }
+        }
+
         output.present();
         self.window.request_redraw();
     }
@@ -118,10 +142,10 @@ impl State {
     fn on_cursor_moved(&mut self, pos: PhysicalPosition<f64>) {
         if self.mouse_pressed {
             let size = self.window.inner_size();
-            let dx = (pos.x - self.last_cursor.x) as f32 / (size.width  as f32 * 0.5);
-            let dy = (pos.y - self.last_cursor.y) as f32 / (size.height as f32 * 0.5);
-            self.pan[0] +=  dx / self.zoom;
-            self.pan[1] += -dy / self.zoom; // y flipped: screen-down = world-down
+            let dx =  (pos.x - self.last_cursor.x) as f32 / (size.width  as f32 * 0.5);
+            let dy = -(pos.y - self.last_cursor.y) as f32 / (size.height as f32 * 0.5);
+            self.pan[0] += dx / self.zoom;
+            self.pan[1] += dy / self.zoom;
             self.renderer.update_camera(&self.queue, self.pan, self.zoom);
         }
         self.last_cursor = pos;
@@ -129,8 +153,9 @@ impl State {
 }
 
 struct App {
-    state: Option<State>,
-    n:     u32,
+    state:      Option<State>,
+    n:          u32,
+    gif_frames: Option<u32>,
 }
 
 impl ApplicationHandler for App {
@@ -139,14 +164,17 @@ impl ApplicationHandler for App {
             event_loop.create_window(Default::default()).unwrap()
         );
         window.set_window_icon(Some(make_window_icon()));
-        self.state = Some(pollster::block_on(State::new(window, self.n)));
+        self.state = Some(pollster::block_on(State::new(window, self.n, self.gif_frames)));
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let Some(s) = &mut self.state else { return };
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::RedrawRequested => s.render(),
+            WindowEvent::RedrawRequested => {
+                s.render();
+                if s.should_exit { event_loop.exit(); }
+            }
 
             WindowEvent::MouseInput { button: MouseButton::Left, state, .. } =>
                 s.mouse_pressed = state == ElementState::Pressed,
@@ -160,57 +188,56 @@ impl ApplicationHandler for App {
 
 fn main() {
     env_logger::init();
-    let n = parse_n();
+    let (n, gif_frames) = parse_args();
     EventLoop::new().unwrap()
-        .run_app(&mut App { state: None, n })
+        .run_app(&mut App { state: None, n, gif_frames })
         .unwrap();
 }
 
-/// Generates a 64×64 window icon that mirrors the simulation's look:
-/// two glowing galactic cores (Gaussian falloff) on a black background,
-/// with a sparse star field rendered via a deterministic hash.
+fn parse_args() -> (u32, Option<u32>) {
+    let args: Vec<String> = std::env::args().collect();
+    let mut n   = sim::N_DEFAULT;
+    let mut gif = None;
+    let mut i   = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--n" if i + 1 < args.len() => {
+                n   = args[i + 1].parse().unwrap_or(n).max(4);
+                i  += 2;
+            }
+            "--gif" => {
+                let frames = if i + 1 < args.len() {
+                    args[i + 1].parse().unwrap_or(90)
+                } else { 90 };
+                gif = Some(frames);
+                i  += if i + 1 < args.len() && args[i+1].parse::<u32>().is_ok() { 2 } else { 1 };
+            }
+            _ => i += 1,
+        }
+    }
+    (n, gif)
+}
+
+/// Generates a 64×64 window icon: two glowing galactic cores + star field.
 fn make_window_icon() -> Icon {
     const S: u32 = 64;
     let mut rgba = vec![0u8; (S * S * 4) as usize];
-
-    // Core positions match the galaxy-collision initial conditions (scaled to icon space)
     let cores: &[(f32, f32)] = &[(43.0, 16.0), (20.0, 47.0)];
 
     for y in 0..S {
         for x in 0..S {
             let idx = ((y * S + x) * 4) as usize;
-
-            // Gaussian glow from each galactic core
             let mut v = 0.0f32;
             for &(cx, cy) in cores {
                 let dx = x as f32 - cx;
                 let dy = y as f32 - cy;
                 v += (-(dx * dx + dy * dy) / 30.0).exp();
             }
-
-            // Sparse star field via deterministic hash (no RNG dep)
-            let h = x.wrapping_mul(2654435761).wrapping_add(y.wrapping_mul(2246822519));
+            let h    = x.wrapping_mul(2654435761).wrapping_add(y.wrapping_mul(2246822519));
             let star = if h & 0xFFFF < 180 { 0.18 } else { 0.0 };
-
-            let b = ((v + star).min(1.0) * 255.0) as u8;
-            rgba[idx]     = b;
-            rgba[idx + 1] = b;
-            rgba[idx + 2] = b;
-            rgba[idx + 3] = 255;
+            let b    = ((v + star).min(1.0) * 255.0) as u8;
+            rgba[idx] = b; rgba[idx+1] = b; rgba[idx+2] = b; rgba[idx+3] = 255;
         }
     }
-
     Icon::from_rgba(rgba, S, S).unwrap()
-}
-
-fn parse_n() -> u32 {
-    let args: Vec<String> = std::env::args().collect();
-    for w in args.windows(2) {
-        if w[0] == "--n" {
-            if let Ok(n) = w[1].parse::<u32>() {
-                return n.max(4);
-            }
-        }
-    }
-    sim::N_DEFAULT
 }

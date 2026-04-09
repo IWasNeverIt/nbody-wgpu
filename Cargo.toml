@@ -13,6 +13,7 @@ harness = false
 [dependencies]
 bytemuck = { version = "1.25.0", features = ["derive"] }
 env_logger = "0.11.10"
+gif = "0.13"
 log = "0.4.29"
 pollster = "0.4.0"
 wgpu = "29.0.1"
