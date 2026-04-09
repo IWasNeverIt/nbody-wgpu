@@ -35,11 +35,11 @@ fn main(
     @builtin(local_invocation_index) lid: u32,
 ) {
     let i      = gid.x;
-    let active = i < params.n;
+    let in_bounds = i < params.n;
 
     var pi:  Particle;
     var acc = vec2<f32>(0.0);
-    if active { pi = particles_in[i]; }
+    if in_bounds { pi = particles_in[i]; }
 
     let num_tiles = (params.n + TILE - 1u) / TILE;
 
@@ -59,7 +59,7 @@ fn main(
         // Self-force: d = (0,0), so force = mass * (0,0) * inv_dist³ = 0. Safe.
         // Ghost-force: mass = 0, so force = 0. Safe.
         // No branch needed in the inner loop — both cases produce 0 naturally.
-        if active {
+        if in_bounds {
             for (var k = 0u; k < TILE; k++) {
                 let pj       = tile[k];
                 let d        = pj.pos - pi.pos;
@@ -70,7 +70,7 @@ fn main(
         workgroupBarrier(); // done reading; safe for next tile load
     }
 
-    if active {
+    if in_bounds {
         let vel = pi.vel + acc * params.dt;
         let pos = pi.pos + vel * params.dt;
         particles_out[i] = Particle(pos, vel, pi.mass, 0.0);
