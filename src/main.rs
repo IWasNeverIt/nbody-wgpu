@@ -1,4 +1,5 @@
 mod compute;
+mod render;
 mod sim;
 
 use std::sync::Arc;
@@ -10,12 +11,13 @@ use winit::{
 };
 
 struct State {
-    surface: wgpu::Surface<'static>,
-    device:  wgpu::Device,
-    queue:   wgpu::Queue,
-    config:  wgpu::SurfaceConfiguration,
-    window:  Arc<Window>,
-    sim:     sim::Simulation,
+    surface:  wgpu::Surface<'static>,
+    device:   wgpu::Device,
+    queue:    wgpu::Queue,
+    config:   wgpu::SurfaceConfiguration,
+    window:   Arc<Window>,
+    sim:      sim::Simulation,
+    renderer: render::Renderer,
 }
 
 impl State {
@@ -25,7 +27,7 @@ impl State {
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
+                power_preference:   wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 ..Default::default()
             })
@@ -41,14 +43,15 @@ impl State {
 
         compute::run_double_test(&device, &queue);
 
-        let sim  = sim::Simulation::new(&device, &queue, sim::N_DEFAULT);
+        let sim = sim::Simulation::new(&device, &queue, sim::N_DEFAULT);
         println!("Simulation: {} particles", sim.n);
 
         let size = window.inner_size();
         let caps = surface.get_capabilities(&adapter);
+        let format = caps.formats[0];
         let config = wgpu::SurfaceConfiguration {
             usage:   wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format:  caps.formats[0],
+            format,
             width:   size.width,
             height:  size.height,
             present_mode: wgpu::PresentMode::Fifo,
@@ -58,7 +61,11 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        Self { surface, device, queue, config, window, sim }
+        let bufs = sim.buffers();
+        let renderer = render::Renderer::new(&device, format, sim.n, bufs[0], bufs[1]);
+        renderer.update_camera(&queue, [0.0, 0.0], 1.05);
+
+        Self { surface, device, queue, config, window, sim, renderer }
     }
 
     fn render(&mut self) {
@@ -66,27 +73,11 @@ impl State {
             wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             _ => return,
         };
-        let view   = output.texture.create_view(&Default::default());
+        let view    = output.texture.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
 
         self.sim.step(&mut encoder);
-
-        {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load:  wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.05, g: 0.02, b: 0.12, a: 1.0, // dark purple
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-        }
+        self.renderer.draw(&mut encoder, &view, self.sim.cur());
 
         self.queue.submit([encoder.finish()]);
         output.present();

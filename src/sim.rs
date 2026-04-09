@@ -107,9 +107,12 @@ impl Simulation {
         self.cur = next;
     }
 
-    /// Buffer holding the most recently written particle state.
-    pub fn current_buf(&self) -> &wgpu::Buffer {
-        &self.bufs[self.cur]
+    /// Index of the buffer holding the most recently written particle state.
+    pub fn cur(&self) -> usize { self.cur }
+
+    /// Both ping-pong buffers, in order. Use `cur()` to know which is current.
+    pub fn buffers(&self) -> [&wgpu::Buffer; 2] {
+        [&self.bufs[0], &self.bufs[1]]
     }
 }
 
