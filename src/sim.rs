@@ -107,9 +107,12 @@ impl Simulation {
         self.cur = next;
     }
 
-    /// Buffer holding the most recently written particle state.
-    pub fn current_buf(&self) -> &wgpu::Buffer {
-        &self.bufs[self.cur]
+    /// Index of the buffer holding the most recently written particle state.
+    pub fn cur(&self) -> usize { self.cur }
+
+    /// Both ping-pong buffers, in order. Use `cur()` to know which is current.
+    pub fn buffers(&self) -> [&wgpu::Buffer; 2] {
+        [&self.bufs[0], &self.bufs[1]]
     }
 }
 
@@ -159,22 +162,30 @@ fn make_bind_group(
     })
 }
 
-/// Central heavy mass + lighter particles on circular orbits.
+/// Two disk galaxies on a collision course.
+/// Each has a heavy central mass and lighter particles on circular orbits.
+/// Opposite spins maximise tidal tails during the merger.
 fn init_particles(n: u32) -> Vec<Particle> {
-    let mut out = Vec::with_capacity(n as usize);
+    let half = n / 2;
+    let mut out = make_galaxy(half,      [-0.50,  0.18], [ 0.22, -0.04],  1.0);
+    out.extend(   make_galaxy(n - half,  [ 0.50, -0.18], [-0.22,  0.04], -1.0));
+    out
+}
 
-    // Central body
-    out.push(Particle { pos: [0.0, 0.0], vel: [0.0, 0.0], mass: 1000.0, _pad: 0.0 });
+fn make_galaxy(n: u32, center: [f32; 2], drift: [f32; 2], spin: f32) -> Vec<Particle> {
+    let mut out  = Vec::with_capacity(n as usize);
+    let m_center = 500.0_f32;
+
+    out.push(Particle { pos: center, vel: drift, mass: m_center, _pad: 0.0 });
 
     for i in 1..n {
         let t     = i as f32 / (n - 1) as f32;
-        let angle = t * TAU * 7.0;          // spread across several windings
-        let r     = 0.15 + t * 0.75;        // 0.15 .. 0.90
-        let speed = (1000.0_f32 / r).sqrt(); // circular-orbit speed (G=1, M=1000)
-
+        let angle = t * TAU * 6.0;
+        let r     = 0.03 + t * 0.32;
+        let speed = (m_center / r).sqrt() * spin; // circular-orbit, G=1
         out.push(Particle {
-            pos:  [r * angle.cos(), r * angle.sin()],
-            vel:  [-speed * angle.sin(), speed * angle.cos()],
+            pos:  [center[0] + r * angle.cos(),    center[1] + r * angle.sin()],
+            vel:  [drift[0] - speed * angle.sin(), drift[1] + speed * angle.cos()],
             mass: 1.0,
             _pad: 0.0,
         });
