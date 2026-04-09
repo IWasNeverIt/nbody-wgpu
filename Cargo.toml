@@ -1,0 +1,19 @@
+[package]
+name = "nbody-wgpu"
+version = "0.1.0"
+edition = "2024"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "nbody"
+harness = false
+
+[dependencies]
+bytemuck = { version = "1.25.0", features = ["derive"] }
+env_logger = "0.11.10"
+log = "0.4.29"
+pollster = "0.4.0"
+wgpu = "29.0.1"
+winit = "0.30.13"
