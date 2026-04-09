@@ -1,5 +1,7 @@
 # nbody-wgpu
 
+![nbody simulation — two galaxies colliding](nbody.gif)
+
 GPU-accelerated N-body gravitational simulation written in Rust using [wgpu](https://wgpu.rs/).
 
 All-pairs O(N²) gravity runs entirely on the GPU via a tiled WGSL compute shader.
