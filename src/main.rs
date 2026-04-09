@@ -1,27 +1,39 @@
 mod compute;
+pub mod cpu;
 mod render;
 mod sim;
 
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
+    dpi::PhysicalPosition,
+    event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
     window::{Window, WindowId},
 };
 
+/// Physics steps dispatched per rendered frame.
+/// More steps = faster simulation; each step is ~O(N²) on the GPU.
+const STEPS_PER_FRAME: u32 = 4;
+
 struct State {
-    surface:  wgpu::Surface<'static>,
-    device:   wgpu::Device,
-    queue:    wgpu::Queue,
-    config:   wgpu::SurfaceConfiguration,
-    window:   Arc<Window>,
-    sim:      sim::Simulation,
-    renderer: render::Renderer,
+    surface:       wgpu::Surface<'static>,
+    device:        wgpu::Device,
+    queue:         wgpu::Queue,
+    config:        wgpu::SurfaceConfiguration,
+    window:        Arc<Window>,
+    sim:           sim::Simulation,
+    renderer:      render::Renderer,
+    // camera
+    pan:           [f32; 2],
+    zoom:          f32,
+    // mouse
+    mouse_pressed: bool,
+    last_cursor:   PhysicalPosition<f64>,
 }
 
 impl State {
-    async fn new(window: Arc<Window>) -> Self {
+    async fn new(window: Arc<Window>, n: u32) -> Self {
         let instance = wgpu::Instance::default();
         let surface  = instance.create_surface(Arc::clone(&window)).unwrap();
 
@@ -34,7 +46,7 @@ impl State {
             .await
             .expect("no GPU adapter found");
 
-        println!("Adapter: {:?}", adapter.get_info().name);
+        println!("Adapter: {}", adapter.get_info().name);
 
         let (device, queue) = adapter
             .request_device(&Default::default())
@@ -43,11 +55,11 @@ impl State {
 
         compute::run_double_test(&device, &queue);
 
-        let sim = sim::Simulation::new(&device, &queue, sim::N_DEFAULT);
-        println!("Simulation: {} particles", sim.n);
+        let sim = sim::Simulation::new(&device, &queue, n);
+        println!("Simulation: {} particles, {} steps/frame", sim.n, STEPS_PER_FRAME);
 
-        let size = window.inner_size();
-        let caps = surface.get_capabilities(&adapter);
+        let size   = window.inner_size();
+        let caps   = surface.get_capabilities(&adapter);
         let format = caps.formats[0];
         let config = wgpu::SurfaceConfiguration {
             usage:   wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -61,11 +73,19 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        let bufs = sim.buffers();
+        let bufs     = sim.buffers();
         let renderer = render::Renderer::new(&device, format, sim.n, bufs[0], bufs[1]);
-        renderer.update_camera(&queue, [0.0, 0.0], 1.05);
 
-        Self { surface, device, queue, config, window, sim, renderer }
+        let (pan, zoom) = ([0.0_f32, 0.0], 1.05_f32);
+        renderer.update_camera(&queue, pan, zoom);
+
+        Self {
+            surface, device, queue, config, window,
+            sim, renderer,
+            pan, zoom,
+            mouse_pressed: false,
+            last_cursor:   PhysicalPosition::default(),
+        }
     }
 
     fn render(&mut self) {
@@ -74,20 +94,43 @@ impl State {
             _ => return,
         };
         let view    = output.texture.create_view(&Default::default());
-        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let mut enc = self.device.create_command_encoder(&Default::default());
 
-        self.sim.step(&mut encoder);
-        self.renderer.draw(&mut encoder, &view, self.sim.cur());
+        for _ in 0..STEPS_PER_FRAME {
+            self.sim.step(&mut enc);
+        }
+        self.renderer.draw(&mut enc, &view, self.sim.cur());
 
-        self.queue.submit([encoder.finish()]);
+        self.queue.submit([enc.finish()]);
         output.present();
         self.window.request_redraw();
     }
+
+    fn on_scroll(&mut self, delta: MouseScrollDelta) {
+        let lines = match delta {
+            MouseScrollDelta::LineDelta(_, y)  => y,
+            MouseScrollDelta::PixelDelta(p)    => p.y as f32 * 0.05,
+        };
+        self.zoom = (self.zoom * 1.15_f32.powf(lines)).clamp(0.05, 100.0);
+        self.renderer.update_camera(&self.queue, self.pan, self.zoom);
+    }
+
+    fn on_cursor_moved(&mut self, pos: PhysicalPosition<f64>) {
+        if self.mouse_pressed {
+            let size = self.window.inner_size();
+            let dx = (pos.x - self.last_cursor.x) as f32 / (size.width  as f32 * 0.5);
+            let dy = (pos.y - self.last_cursor.y) as f32 / (size.height as f32 * 0.5);
+            self.pan[0] +=  dx / self.zoom;
+            self.pan[1] += -dy / self.zoom; // y flipped: screen-down = world-down
+            self.renderer.update_camera(&self.queue, self.pan, self.zoom);
+        }
+        self.last_cursor = pos;
+    }
 }
 
-#[derive(Default)]
 struct App {
     state: Option<State>,
+    n:     u32,
 }
 
 impl ApplicationHandler for App {
@@ -95,15 +138,20 @@ impl ApplicationHandler for App {
         let window = Arc::new(
             event_loop.create_window(Default::default()).unwrap()
         );
-        self.state = Some(pollster::block_on(State::new(window)));
+        self.state = Some(pollster::block_on(State::new(window, self.n)));
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        let Some(s) = &mut self.state else { return };
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::RedrawRequested => {
-                if let Some(s) = &mut self.state { s.render(); }
-            }
+            WindowEvent::RedrawRequested => s.render(),
+
+            WindowEvent::MouseInput { button: MouseButton::Left, state, .. } =>
+                s.mouse_pressed = state == ElementState::Pressed,
+
+            WindowEvent::CursorMoved { position, .. } => s.on_cursor_moved(position),
+            WindowEvent::MouseWheel  { delta, .. }    => s.on_scroll(delta),
             _ => {}
         }
     }
@@ -111,5 +159,20 @@ impl ApplicationHandler for App {
 
 fn main() {
     env_logger::init();
-    EventLoop::new().unwrap().run_app(&mut App::default()).unwrap();
+    let n = parse_n();
+    EventLoop::new().unwrap()
+        .run_app(&mut App { state: None, n })
+        .unwrap();
+}
+
+fn parse_n() -> u32 {
+    let args: Vec<String> = std::env::args().collect();
+    for w in args.windows(2) {
+        if w[0] == "--n" {
+            if let Ok(n) = w[1].parse::<u32>() {
+                return n.max(4);
+            }
+        }
+    }
+    sim::N_DEFAULT
 }

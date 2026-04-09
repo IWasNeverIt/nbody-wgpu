@@ -22,7 +22,7 @@ const QUAD: array<vec2<f32>, 6> = array(
     vec2(-1.0, -1.0), vec2( 1.0, -1.0), vec2( 1.0,  1.0),
     vec2(-1.0, -1.0), vec2( 1.0,  1.0), vec2(-1.0,  1.0),
 );
-const POINT_RADIUS: f32 = 0.004; // in clip-space units
+const POINT_RADIUS: f32 = 0.003; // in clip-space units
 
 struct VertOut {
     @builtin(position) clip_pos: vec4<f32>,
@@ -52,8 +52,8 @@ fn fs_main(in: VertOut) -> @location(0) vec4<f32> {
     // discard corners to get a circle
     if dot(in.uv, in.uv) > 1.0 { discard; }
 
-    // blue (slow) → orange (fast)
-    let t     = clamp(in.speed / 40.0, 0.0, 1.0);
-    let color = mix(vec3(0.25, 0.45, 1.0), vec3(1.0, 0.55, 0.1), t);
-    return vec4<f32>(color, 1.0);
+    // blue (slow) → white-orange (fast); alpha kept low so additive blending glows
+    let t     = clamp(in.speed / 120.0, 0.0, 1.0);
+    let color = mix(vec3(0.20, 0.40, 1.0), vec3(1.0, 0.75, 0.3), t);
+    return vec4<f32>(color, 0.55);
 }

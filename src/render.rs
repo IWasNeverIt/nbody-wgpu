@@ -83,7 +83,20 @@ impl Renderer {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend:      Some(wgpu::BlendState::ALPHA_BLENDING),
+                    // Additive blending: overlapping particles accumulate brightness,
+                    // producing a natural "glow" wherever stars cluster.
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation:  wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation:  wgpu::BlendOperation::Add,
+                        },
+                    }),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -144,7 +157,7 @@ impl Renderer {
                 resolve_target: None,
                 depth_slice:    None,
                 ops: wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.04, g: 0.02, b: 0.10, a: 1.0 }),
+                    load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
                     store: wgpu::StoreOp::Store,
                 },
             })],
